@@ -1,45 +1,59 @@
-name: Isolated daily reader readiness proof
+name: Isolated daily reader and notification proof
 on:
   push:
     branches: [test/daily-reader-proof-20261026]
     paths: [.github/workflows/reader-readiness-proof.yml]
 permissions: {}
 jobs:
-  public-source-proof:
+  source-proof:
+    name: source-proof (${{ matrix.mode }})
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [success, injected-failure]
     steps:
-      - name: Test isolated notification delivery and permitted public retrieval
+      - name: Run pinned reader with an isolated notification receiver
+        env:
+          PROOF_MODE: ${{ matrix.mode }}
         shell: bash
         run: |
           python3 - <<'PY'
-          import datetime, http.server, json, threading, urllib.request
-          from urllib.parse import urlencode, urlsplit
-          # Test receiver only: no email, personal information, production intake or credentials.
+          import hashlib, http.server, json, os, threading, urllib.request
+          url = 'https://raw.githubusercontent.com/Space-Evader/tennismoon/45eb14844cb9de7705ee6f3ac7572af7130f5d15/intelligence/wikimedia_reader.py'
+          with urllib.request.urlopen(url, timeout=15) as response:
+              source = response.read(20001)
+          assert len(source) <= 20000 and hashlib.sha256(source).hexdigest() == '452041fa356eba03a4de0e90d9f4b600dcdd836a9e90d868d211b0685bea3a43'
+          module = {'__name__':'reader'}
+          exec(compile(source, 'pinned-wikimedia-reader.py', 'exec'), module)
           received = []
           class Receiver(http.server.BaseHTTPRequestHandler):
               def do_POST(self):
                   value = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-                  received.append(value['event'])
+                  assert set(value).issubset({'event','owner_approved','published','packet_id','source_url','source_revision'})
+                  received.append(value)
                   self.send_response(204); self.end_headers()
               def log_message(self, *args): pass
           server = http.server.HTTPServer(('127.0.0.1', 0), Receiver)
           threading.Thread(target=server.serve_forever, daemon=True).start()
-          for event in ('synthetic-review-ready', 'injected-reader-failure'):
-              request = urllib.request.Request('http://127.0.0.1:%s/' % server.server_port, data=json.dumps({'event':event,'synthetic':True}).encode(), headers={'Content-Type':'application/json'}, method='POST')
-              with urllib.request.urlopen(request, timeout=5) as response: assert response.status == 204
+          target = 'http://127.0.0.1:%s/' % server.server_port
+          mode = os.environ['PROOF_MODE']
+          if mode == 'injected-failure':
+              def failure(params): raise OSError('Synthetic upstream 503')
+              try:
+                  module['read_calendar']('2026_Erste_Bank_Open', failure)
+                  raise AssertionError('Failure injection did not fail')
+              except OSError:
+                  module['notify_event'](target, 'reader-failed', allow_local=True)
+                  assert len(received) == 1 and received[0]['event'] == 'reader-failed'
+                  print(json.dumps({'mode':mode,'notification_delivered':received[0],'receiver':'isolated runner loopback','founder_delivery_tested':False}))
+                  server.shutdown()
+                  raise SystemExit(1)  # Expected negative test: real failed job, no publication.
+          packet = module['read_calendar']('2026_Erste_Bank_Open')
+          module['notify_event'](target, 'review-ready', packet, True)
+          assert len(received) == 1 and received[0]['event'] == 'review-ready'
+          print(json.dumps({'mode':mode,'notification_delivered':received[0],'receiver':'isolated runner loopback','founder_delivery_tested':False}))
+          print(json.dumps(packet, indent=2))
           server.shutdown()
-          assert received == ['synthetic-review-ready','injected-reader-failure']
-          print(json.dumps({'isolated_notification_delivery':received,'owner_email_delivery_tested':False}))
-          PY
-      - name: Produce real unreviewed calendar packet from pinned public reader
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import hashlib, urllib.request
-          url = 'https://raw.githubusercontent.com/Space-Evader/tennismoon/78d5db3b4c19b884d3d05a404b719f9da38c4145/intelligence/wikimedia_reader.py'
-          with urllib.request.urlopen(url, timeout=15) as response:
-              source = response.read(20001)
-          assert len(source) <= 20000 and hashlib.sha256(source).hexdigest() == '2c012e486d4fee21d83442827c0521cf626a6af0760a61a3046a4d95f338641e'
-          exec(compile(source, 'pinned-wikimedia-reader.py', 'exec'), {'__name__':'__main__'})
           PY

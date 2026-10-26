@@ -57,3 +57,38 @@ jobs:
           print(json.dumps(packet, indent=2))
           server.shutdown()
           PY
+  github-notification-proof:
+    if: always()
+    needs: source-proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      issues: write
+    steps:
+      - name: Deliver minimal test notices as the GitHub Actions bot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROOF_RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          base = 'https://api.github.com/repos/Space-Evader/tennismoon'
+          run = os.environ['PROOF_RUN_ID']
+          def call(path, payload=None):
+              request = urllib.request.Request(base + path, data=json.dumps(payload).encode() if payload else None,
+                  headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'},
+                  method='POST' if payload else 'GET')
+              with urllib.request.urlopen(request, timeout=15) as response:
+                  return json.loads(response.read(100000))
+          for issue, event, message in [
+              (2, 'review-ready', 'A real public calendar packet is ready for owner review. Verified reader proof: https://github.com/Space-Evader/tennismoon/actions/runs/40386766994 . No owner approval or publication has been granted to the reader.'),
+              (3, 'reader-failed', 'The isolated upstream-failure test exited 1 as intended. No approved records were changed. Test run: https://github.com/Space-Evader/tennismoon/actions/runs/' + run)]:
+              marker = '<!-- tennismoon-proof-' + run + '-' + event + ' -->'
+              comments = call('/issues/%s/comments?per_page=100' % issue)
+              if any(marker in c.get('body','') for c in comments):
+                  print(json.dumps({'issue':issue,'event':event,'replayed':True})); continue
+              comment = call('/issues/%s/comments' % issue, {'body':marker+'\n@Space-Evader — TEST '+event+' notification.\n\n'+message+'\n\nPublic test metadata only; no private source content, production write, deployment or scheduled job.'})
+              assert comment['user']['login'].endswith('[bot]')
+              print(json.dumps({'issue':issue,'event':event,'bot':comment['user']['login'],'notification_comment_url':comment['html_url']}))
+          PY

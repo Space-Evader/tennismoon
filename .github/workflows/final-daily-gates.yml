@@ -1,0 +1,125 @@
+name: Isolated final daily release gates
+on:
+  push:
+    branches: [test/final-daily-gates-20261026]
+    paths: [.github/workflows/final-daily-gates.yml]
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: isolated-final-daily-gates-${{ github.event_name }}
+  cancel-in-progress: false
+jobs:
+  dispatch-isolated-proof:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch this branch only; never update a default branch or schedule
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          base='https://api.github.com/repos/Space-Evader/tennismoon'
+          headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'}
+          with urllib.request.urlopen(urllib.request.Request(base+'/actions/runs/'+os.environ['GITHUB_RUN_ID'],headers=headers),timeout=15) as r:
+              run=json.load(r)
+          request=urllib.request.Request(base+'/actions/workflows/'+str(run['workflow_id'])+'/dispatches',headers=headers,data=json.dumps({'ref':'test/final-daily-gates-20261026'}).encode(),method='POST')
+          with urllib.request.urlopen(request,timeout=15) as r:
+              assert r.status in (200,201,202,204)
+              print(json.dumps({'isolated_manual_dispatch_status':r.status,'default_branch_changed':False,'schedules_enabled':0}))
+          PY
+  intentionally-skipped-reader:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: exit 1
+  hosted-oidc:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    permissions:
+      id-token: write
+    outputs:
+      staging_receipt: ${{ steps.proof.outputs.staging_receipt }}
+    steps:
+      - name: Obtain checksum-pinned release auth modules and test harness
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,pathlib,urllib.request
+          base='https://raw.githubusercontent.com/Space-Evader/tennismoon/75752bbdf9a14087e24631e309788c625a9cdeea/'
+          def download(name):
+              with urllib.request.urlopen(base+name,timeout=15) as r:
+                  value=r.read(60001)
+              assert len(value)<=60000
+              p=pathlib.Path(name);p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(value)
+              return value
+          manifest=json.loads(download('proof/b6923/source-manifest.json'))
+          assert manifest['application_commit']=='b6923cd16315197c0c4e4982f8a495140e1931fd'
+          for name,expected in manifest['tested_files'].items():
+              assert hashlib.sha256(download('proof/b6923/'+name)).hexdigest()==expected
+          download('proof/hosted-oidc.cjs')
+          print(json.dumps({'pinned_application':manifest['application_commit'],'pinned_tree':manifest['application_tree'],'source_files_checked':len(manifest['tested_files']),'proof_branch_is_full_release':False}))
+          PY
+      - name: Install test compiler only
+        run: npm install --prefix "$RUNNER_TEMP/proof-tools" typescript@5.9.3 --ignore-scripts --no-audit --no-fund --package-lock=false
+      - name: Real OIDC to isolated hosted HTTP intake and publication denial
+        id: proof
+        run: NODE_PATH="$RUNNER_TEMP/proof-tools/node_modules" node proof/hosted-oidc.cjs
+  missed-run-proof:
+    if: always() && github.event_name == 'workflow_dispatch'
+    needs: [hosted-oidc, intentionally-skipped-reader]
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      - name: Assess actual skipped/failed jobs, missing-run fixtures and staged acknowledgement; notify GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING_RECEIPT: ${{ needs.hosted-oidc.outputs.staging_receipt }}
+          HOSTED_RESULT: ${{ needs.hosted-oidc.result }}
+        run: |
+          python3 - <<'PY'
+          import datetime,importlib.util,json,os,pathlib,urllib.request
+          from zoneinfo import ZoneInfo
+          raw='https://raw.githubusercontent.com/Space-Evader/tennismoon/75752bbdf9a14087e24631e309788c625a9cdeea/proof/watchdog.py'
+          with urllib.request.urlopen(raw,timeout=15) as r: code=r.read(20000)
+          module={};exec(compile(code,'watchdog.py','exec'),module)
+          api='https://api.github.com/repos/Space-Evader/tennismoon'
+          headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'}
+          def call(path,payload=None):
+              request=urllib.request.Request(api+path,headers=headers,data=json.dumps(payload).encode() if payload else None,method='POST' if payload else 'GET')
+              with urllib.request.urlopen(request,timeout=15) as r:return json.loads(r.read(150000))
+          run_id=os.environ['GITHUB_RUN_ID']
+          jobs=call('/actions/runs/'+run_id+'/jobs?filter=latest&per_page=100')['jobs']
+          skipped=next(j for j in jobs if j['name']=='intentionally-skipped-reader')
+          assert skipped['conclusion']=='skipped'
+          failed=call('/actions/jobs/121852361561')
+          assert failed['conclusion']=='failure'
+          now=datetime.datetime.now(datetime.timezone.utc)
+          day=now.astimezone(ZoneInfo('America/New_York')).date().isoformat()
+          deadline=(now-datetime.timedelta(minutes=10)).isoformat()  # TEST deadline only; not a schedule.
+          assess=lambda runs:module['assess'](now.isoformat(),deadline,runs,day)
+          cases={'actual_skipped_job':assess([{'conclusion':skipped['conclusion'],'staging_step':'skipped'}]),
+                 'no_run_simulation':assess([]),
+                 'actual_prior_failed_job':assess([{'conclusion':failed['conclusion']}]),
+                 'green_without_ack':assess([{'conclusion':'success','staging_step':'success'}])}
+          assert all(c['alert'] for c in cases.values())
+          receipt=json.loads(os.environ.get('STAGING_RECEIPT') or 'null')
+          healthy=assess([{'conclusion':os.environ['HOSTED_RESULT'],'staging_step':'success','staging_receipt':receipt}])
+          marker='<!-- tm-final-watchdog-'+run_id+' -->'
+          comments=call('/issues/3/comments?per_page=100')
+          existing=next((c for c in comments if marker in c['body']),None)
+          if existing: comment=existing
+          else:
+              body=marker+'\n@Space-Evader — TEST missed-run detection proof.\n\nAn actual skipped reader job and a previously injected failed job were detected. Missing-run and green-without-staging-receipt cases also correctly require an alert. This uses a simulated deadline, not a live daily schedule.\n\nProof: https://github.com/Space-Evader/tennismoon/actions/runs/'+run_id+'\n\nNo production data, approval, publication or source verification timestamp was changed.'
+              comment=call('/issues/3/comments',{'body':body})
+          again=call('/issues/3/comments?per_page=100')
+          assert len([c for c in again if marker in c['body']])==1
+          print(json.dumps({'cases':{k:v['state'] for k,v in cases.items()},'successful_stage_ack':healthy['state'],'alert_comment':comment['html_url'],'alert_replay_suppressed':True,'live_schedule_enabled':False,'production_writes':0}))
+          assert healthy['state']=='healthy','Hosted proof did not produce a successful staging receipt'
+          PY

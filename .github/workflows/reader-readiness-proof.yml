@@ -31,18 +31,15 @@ jobs:
           server.shutdown()
           assert received == ['synthetic-review-ready','injected-reader-failure']
           print(json.dumps({'isolated_notification_delivery':received,'owner_email_delivery_tested':False}))
-          def get(params):
-              url = 'https://en.wikipedia.org/w/api.php?' + urlencode(params)
-              req = urllib.request.Request(url,headers={'User-Agent':'TennisMoonReadiness/1.0 (https://github.com/Space-Evader/tennismoon)','Accept':'application/json'})
-              with urllib.request.urlopen(req,timeout=20) as r:
-                  assert urlsplit(r.url).scheme == 'https' and urlsplit(r.url).hostname == 'en.wikipedia.org'
-                  body = r.read(512001); assert len(body) <= 512000
-                  assert r.status == 200
-                  return json.loads(body)
-          rights = get({'action':'query','meta':'siteinfo','siprop':'rightsinfo','format':'json'})['query']['rightsinfo']
-          data = get({'action':'query','prop':'revisions','titles':'2026_Erste_Bank_Open','rvprop':'ids|timestamp','formatversion':2,'format':'json'})
-          page = data['query']['pages'][0]
-          assert not page.get('missing'), 'Article unavailable; do not fabricate information'
-          revision = page['revisions'][0]
-          print(json.dumps({'source_url':'https://en.wikipedia.org/wiki/2026_Erste_Bank_Open','source_revision':revision['revid'],'source_modified_at':revision['timestamp'],'reader_retrieved_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'rights':rights,'owner_approved':False,'production_writes':0,'scheduled_jobs':0}))
+          PY
+      - name: Produce real unreviewed calendar packet from pinned public reader
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, urllib.request
+          url = 'https://raw.githubusercontent.com/Space-Evader/tennismoon/78d5db3b4c19b884d3d05a404b719f9da38c4145/intelligence/wikimedia_reader.py'
+          with urllib.request.urlopen(url, timeout=15) as response:
+              source = response.read(20001)
+          assert len(source) <= 20000 and hashlib.sha256(source).hexdigest() == '2c012e486d4fee21d83442827c0521cf626a6af0760a61a3046a4d95f338641e'
+          exec(compile(source, 'pinned-wikimedia-reader.py', 'exec'), {'__name__':'__main__'})
           PY

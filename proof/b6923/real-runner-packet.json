@@ -1,0 +1,25 @@
+{
+  "schema": "tennis.radar-review/1",
+  "canonical": false,
+  "synthetic": false,
+  "owner_approved": false,
+  "context": {
+    "schema": "tennis.calendar-context/1",
+    "packetHash": "c96162a97855afca5ac84440c852ef2558c8c7b26b430f136f6f5cc39dbe98d8",
+    "sourceUrl": "https://en.wikipedia.org/wiki/2026_Erste_Bank_Open",
+    "revision": "1381926845",
+    "event": "2026 Erste Bank Open",
+    "city": "Vienna, Austria",
+    "start": "2026-10-26",
+    "end": "2026-11-01",
+    "dateExcerpt": "Date  | 26 October–1 November",
+    "locationExcerpt": "Location  | Vienna, Austria",
+    "sourceCapturedAt": 1793042796383,
+    "sourceRetrievedAt": 1793042796383,
+    "sourceModifiedAt": 1792949358000,
+    "sourcePublishedAt": null,
+    "reviewedAt": null,
+    "license": "CC-BY-SA-4.0",
+    "attribution": "2026 Erste Bank Open — Wikipedia contributors; https://en.wikipedia.org/wiki/2026_Erste_Bank_Open"
+  }
+}

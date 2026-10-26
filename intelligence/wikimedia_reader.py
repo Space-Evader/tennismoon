@@ -8,7 +8,7 @@ import json
 import re
 from datetime import datetime, timezone
 from urllib.parse import urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request, urlopen, build_opener, HTTPRedirectHandler
 
 HOST = 'en.wikipedia.org'
 UA = 'TennisMoonReadiness/1.0 (https://github.com/Space-Evader/tennismoon)'
@@ -83,8 +83,38 @@ def read_calendar(title, fetcher=fetch_json, clock=lambda: datetime.now(timezone
                         'license': 'CC-BY-SA-4.0', 'attribution': content['title'] + ' — Wikipedia contributors; ' + source_url}}
 
 
+def notify_event(url, event, packet=None, allow_local=False):
+    """Send minimal status only to an explicitly configured receiver; never email/source bodies."""
+    u = urlsplit(url)
+    local = allow_local and u.scheme == 'http' and u.hostname in ('127.0.0.1', 'localhost')
+    if (u.scheme != 'https' and not local) or not u.hostname or u.username or u.password or u.fragment:
+        raise ValueError('Explicit HTTPS notification destination required')
+    if event not in ('review-ready', 'reader-failed'): raise ValueError('Unknown notification event')
+    notice = {'event': event, 'owner_approved': False, 'published': False}
+    if packet:
+        c = packet['context']
+        if not c['sourceUrl'].startswith('https://en.wikipedia.org/wiki/'): raise ValueError('Public source required')
+        notice.update(packet_id=c['packetHash'], source_url=c['sourceUrl'], source_revision=c['revision'])
+    class NoRedirect(HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs): return None
+    body = json.dumps(notice).encode()
+    if len(body) > 1200: raise ValueError('Notification exceeds bound')
+    request = Request(url, data=body, headers={'Content-Type': 'application/json'}, method='POST')
+    with build_opener(NoRedirect()).open(request, timeout=8) as response:
+        if response.status not in (200, 201, 202, 204): raise ValueError('Notification not accepted')
+    return notice
+
+
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--title', default='2026_Erste_Bank_Open')
+    p.add_argument('--notify-url')
+    p.add_argument('--test-local-notify', action='store_true')
     a = p.parse_args()
-    print(json.dumps(read_calendar(a.title), ensure_ascii=False, indent=2))
+    try:
+        packet = read_calendar(a.title)
+    except Exception:
+        if a.notify_url: notify_event(a.notify_url, 'reader-failed', allow_local=a.test_local_notify)
+        raise SystemExit('Reader failed; no packet, review or publication produced.')
+    print(json.dumps(packet, ensure_ascii=False, indent=2))
+    if a.notify_url: notify_event(a.notify_url, 'review-ready', packet, a.test_local_notify)
